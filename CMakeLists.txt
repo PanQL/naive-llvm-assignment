@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.1.0)
 project(assign2)
+add_compile_options(-std=c++14)
 find_package(LLVM REQUIRED CONFIG HINTS ${LLVM_DIR} ${LLVM_DIR}/lib/cmake/llvm
 	                NO_DEFAULT_PATH)
 
