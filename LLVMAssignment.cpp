@@ -56,11 +56,7 @@ struct FuncPtrPass : public ModulePass {
     static char ID;  // Pass identification, replacement for typeid
     FuncPtrPass() : ModulePass(ID) {}
 
-	CallInst* currentInst;
-	std::list<Function*> functions;
 	std::map<CallInst*, std::list<Function*>> result;	// call指令对应到哪些函数
-	std::map<Function*, std::list<CallInst*>> functionMap;	// 已经知道被call指令调用到的函数，都在哪些指令中被调用
-	std::map<CallInst*, std::list<Argument*>> argumentMap; // 对于一个直接调用传入参数的call,有哪些参数可能被调用
 
     bool runOnModule(Module &M) override {
 		bool res = false;
@@ -69,22 +65,6 @@ struct FuncPtrPass : public ModulePass {
 			for (Function::iterator bb = ff->begin(); bb != ff->end(); ++bb)
 				for (BasicBlock::iterator ii = bb->begin(); ii != bb->end(); ++ii)
 					res |= checkCallInst(dyn_cast<CallInst>(ii));
-		for (std::map<CallInst*, std::list<Argument*>>::iterator it = argumentMap.begin(); it != argumentMap.end(); ++it) {
-			currentInst = dyn_cast<CallInst>(it->first);
-			std::list<Argument*> arguments = std::move(it->second);
-			while(!arguments.empty()){
-				Argument *arg = arguments.front();
-				Function *func = arg->getParent();
-				for (std::list<CallInst*>::iterator instIt = functionMap[func].begin(); instIt != functionMap[func].end(); ++instIt) {
-					Value* value = (*instIt)->getArgOperand(arg->getArgNo());
-					if (Function *theFunction = dyn_cast<Function>(value)){
-						result[currentInst].push_back(theFunction);
-					}
-					checkPhiNode(dyn_cast<PHINode>(value));
-				}
-				arguments.pop_front();
-			}
-		}
 			
 		for (std::map<CallInst*, std::list<Function*>>::iterator it = result.begin(); it != result.end(); ++it){
 			errs() << it->first->getDebugLoc().getLine() << " : ";
@@ -100,37 +80,79 @@ struct FuncPtrPass : public ModulePass {
 
 	bool checkCallInst(CallInst *callInst) {
 		if(!callInst)return false;
-		currentInst = callInst;
+		errs() << callInst->getDebugLoc().getLine() << '\n';
 		if(Function *func = callInst->getCalledFunction()){	// 最简单的直接函数调用
-			result[currentInst].push_back(func);
-			functionMap[func].push_back(currentInst);
+			result[callInst].push_back(func);
 		}else if(Value *value = callInst->getCalledOperand()){
-			checkPhiNode(dyn_cast<PHINode>(value));
-			checkArgument(dyn_cast<Argument>(value));
+			result[callInst] = std::list<Function*>(solveValue(value));
+		}else{
+			errs() << "ERROR\n";
 		}
 		return false;
 	}
 
-	void checkPhiNode(PHINode *node) {
-		if(!node)return;
-		auto range = node->incoming_values();
-		for (PHINode::op_iterator it = range.begin(); it != range.end(); ++it)
-			if (Function *funcInPhi = dyn_cast<Function>(it->get())){
-				errs() << "get a function " << funcInPhi->getName() << '\n';
-				result[currentInst].push_back(funcInPhi);
-				functionMap[funcInPhi].push_back(currentInst);
-			}else if(PHINode *newnode = dyn_cast<PHINode>(it->get()))
-				checkPhiNode(newnode);
-			else if(Argument *arg = dyn_cast<Argument>(it->get())){
-				argumentMap[currentInst].push_back(arg);
-				errs() << "still unimplement it !\n";
-			}else
-				errs() << "something you never take account\n";
+	std::list<Function*> solveFunction(CallInst *caller, Function *func) {
+		std::list<Function*> tmp;
+		std::list<Value*> solveRes;
+		for (Function::iterator bb = func->begin(); bb != func->end(); ++bb)
+			if (ReturnInst *ret = dyn_cast<ReturnInst>(bb->getTerminator()))
+				solveRes.push_back(ret->getReturnValue());
+		while(!solveRes.empty()){
+			Value *value = solveRes.front();
+			if (Function *theFunc = dyn_cast<Function>(value)) {
+				tmp.push_back(theFunc);
+			} else if (CallInst *callInst = dyn_cast<CallInst>(value)) {
+				if (Function *doubleCall = callInst->getCalledFunction()) {
+				} else {
+					errs() << "double call instruction not direct call\n";
+				}
+			} else if(PHINode *phi = dyn_cast<PHINode>(value)) {
+				for(Value *phivalue : phi->incoming_values())
+					solveRes.push_back(phivalue);
+			} else if(Argument *arg = dyn_cast<Argument>(value)) {
+				// TODO 分析返回值的时候需要细致到phi节点来自哪个基本块。把函数的到达数据流和参数的一起分析
+				std::list<Function*> solveValueRes = solveValue(caller->getArgOperand(arg->getArgNo()));
+				tmp.splice(tmp.end(), solveValueRes);
+			} else {
+			}
+			solveRes.pop_front();
+		}
+		return tmp;
 	}
 
-	void checkArgument(Argument *arg) {
-		if(!arg)return;
-		argumentMap[currentInst].push_back(arg);
+	std::list<Function*> solveValue(Value *origin) {
+		std::list<Function*> tmp;
+		std::list<Value*> solveRes;
+		solveRes.push_back(origin);
+		while(!solveRes.empty()) {
+			Value *value = solveRes.front();
+			if (Function *theFunc = dyn_cast<Function>(value)) {
+				tmp.push_back(theFunc);
+			} else if (CallInst *callInst = dyn_cast<CallInst>(value)) {
+				if (Function *doubleCall = callInst->getCalledFunction()) {
+					solveFunction(callInst, doubleCall);
+				} else {
+					std::list<Function*> solveTheVal = solveValue(callInst->getCalledOperand());
+					for (Function *func : solveTheVal) {
+						tmp.splice(tmp.end(), solveFunction(callInst, func));
+					}
+					errs() << "double call instruction not direct call\n";
+				}
+			} else if(PHINode *phi = dyn_cast<PHINode>(value)) {
+				for(Value *phivalue : phi->incoming_values())
+					solveRes.push_back(phivalue);
+			} else if(Argument *arg = dyn_cast<Argument>(value)) {
+				for(User *user : arg->getParent()->users())
+					if (CallInst *callInst = dyn_cast<CallInst>(user)) {
+						solveRes.push_back(callInst->getArgOperand(arg->getArgNo()));
+					} else {
+						errs() << "for argument user, not a call instruction!\n";
+					}
+			} else {
+			}
+			solveRes.pop_front();
+		}
+		return tmp;
 	}
 };
 
