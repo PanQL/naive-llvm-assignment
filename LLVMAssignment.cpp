@@ -80,7 +80,6 @@ struct FuncPtrPass : public ModulePass {
 
 	bool checkCallInst(CallInst *callInst) {
 		if(!callInst)return false;
-		errs() << callInst->getDebugLoc().getLine() << '\n';
 		if(Function *func = callInst->getCalledFunction()){	// 最简单的直接函数调用
 			result[callInst].push_back(func);
 		}else if(Value *value = callInst->getCalledOperand()){
@@ -91,7 +90,7 @@ struct FuncPtrPass : public ModulePass {
 		return false;
 	}
 
-	std::list<Function*> solveFunction(CallInst *caller, Function *func) {
+	std::list<Function*> solveFunction(CallInst *caller, Function *func, BasicBlock* basicBlock) {
 		std::list<Function*> tmp;
 		std::list<Value*> solveRes;
 		for (Function::iterator bb = func->begin(); bb != func->end(); ++bb)
@@ -102,16 +101,16 @@ struct FuncPtrPass : public ModulePass {
 			if (Function *theFunc = dyn_cast<Function>(value)) {
 				tmp.push_back(theFunc);
 			} else if (CallInst *callInst = dyn_cast<CallInst>(value)) {
-				if (Function *doubleCall = callInst->getCalledFunction()) {
-				} else {
-					errs() << "double call instruction not direct call\n";
-				}
+				errs() << "UNIMPLEMNTED\n";
 			} else if(PHINode *phi = dyn_cast<PHINode>(value)) {
 				for(Value *phivalue : phi->incoming_values())
 					solveRes.push_back(phivalue);
 			} else if(Argument *arg = dyn_cast<Argument>(value)) {
-				// TODO 分析返回值的时候需要细致到phi节点来自哪个基本块。把函数的到达数据流和参数的一起分析
-				std::list<Function*> solveValueRes = solveValue(caller->getArgOperand(arg->getArgNo()));
+				Value *valueToSolve = caller->getArgOperand(arg->getArgNo());
+				if (PHINode *phiArg = dyn_cast<PHINode>(valueToSolve))
+					if (Value *valueForBB = phiArg->getIncomingValueForBlock(basicBlock))
+						valueToSolve = valueForBB;
+				std::list<Function*> solveValueRes = solveValue(valueToSolve);
 				tmp.splice(tmp.end(), solveValueRes);
 			} else {
 			}
@@ -130,13 +129,17 @@ struct FuncPtrPass : public ModulePass {
 				tmp.push_back(theFunc);
 			} else if (CallInst *callInst = dyn_cast<CallInst>(value)) {
 				if (Function *doubleCall = callInst->getCalledFunction()) {
-					solveFunction(callInst, doubleCall);
+					tmp.splice(tmp.end(), solveFunction(callInst, doubleCall, callInst->getParent()));
+				} else if (PHINode *phi = dyn_cast<PHINode>(callInst->getCalledOperand())){
+					for (BasicBlock *block : phi->blocks()){
+						std::list<Function*> solveTheVal = solveValue(phi->getIncomingValueForBlock(block));
+						for (Function *func : solveTheVal)
+							tmp.splice(tmp.end(), solveFunction(callInst, func, block));
+					}
 				} else {
 					std::list<Function*> solveTheVal = solveValue(callInst->getCalledOperand());
-					for (Function *func : solveTheVal) {
-						tmp.splice(tmp.end(), solveFunction(callInst, func));
-					}
-					errs() << "double call instruction not direct call\n";
+					for (Function *func : solveTheVal)
+						tmp.splice(tmp.end(), solveFunction(callInst, func, callInst->getParent()));
 				}
 			} else if(PHINode *phi = dyn_cast<PHINode>(value)) {
 				for(Value *phivalue : phi->incoming_values())
@@ -148,7 +151,9 @@ struct FuncPtrPass : public ModulePass {
 					} else {
 						errs() << "for argument user, not a call instruction!\n";
 					}
+			} else if (ConstantPointerNull *nptr = dyn_cast<ConstantPointerNull>(value)) {
 			} else {
+				errs() << "ERROR here\n";
 			}
 			solveRes.pop_front();
 		}
