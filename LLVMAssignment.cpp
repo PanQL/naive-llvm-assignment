@@ -108,11 +108,11 @@ struct FuncPtrPass : public ModulePass {
 				for(Value *phivalue : phi->incoming_values())
 					solveRes.push_back(phivalue);
 			} else if(Argument *arg = dyn_cast<Argument>(value)) {
-				Value *valueToSolve = caller->getArgOperand(arg->getArgNo());
-				if (PHINode *phiArg = dyn_cast<PHINode>(valueToSolve))
-					if (Value *valueForBB = phiArg->getIncomingValueForBlock(basicBlock))
-						valueToSolve = valueForBB;
-				std::list<Function*> solveValueRes = solveValue(valueToSolve);
+				unsigned argIdx = arg->getArgNo();
+				BasicBlock *curBlock = caller->getParent();
+				Value *valueToSolve = caller->getArgOperand(std::move(argIdx));
+				valueToSolve = valueToSolve->DoPHITranslation(std::move(curBlock), basicBlock);
+				std::list<Function*> solveValueRes = solveValue(std::move(valueToSolve));
 				tmp.splice(tmp.end(), solveValueRes);
 			} else {
 			}
