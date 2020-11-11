@@ -28,6 +28,7 @@
 #include <llvm/IR/Instructions.h>
 #include <list>
 #include <map>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
 
 using namespace llvm;
 static ManagedStatic<LLVMContext> GlobalContext;
@@ -56,7 +57,7 @@ struct FuncPtrPass : public ModulePass {
     static char ID;  // Pass identification, replacement for typeid
     FuncPtrPass() : ModulePass(ID) {}
 
-	std::map<CallInst*, std::list<Function*>> result;	// call指令对应到哪些函数
+	std::map<int, std::list<Function*>> result;	// call指令对应到哪些函数
 
     bool runOnModule(Module &M) override {
 		bool res = false;
@@ -66,8 +67,8 @@ struct FuncPtrPass : public ModulePass {
 				for (BasicBlock::iterator ii = bb->begin(); ii != bb->end(); ++ii)
 					res |= checkCallInst(dyn_cast<CallInst>(ii));
 			
-		for (std::map<CallInst*, std::list<Function*>>::iterator it = result.begin(); it != result.end(); ++it){
-			errs() << it->first->getDebugLoc().getLine() << " : ";
+		for (std::map<int, std::list<Function*>>::iterator it = result.begin(); it != result.end(); ++it){
+			errs() << it->first << " : ";
 			it->second.sort();
 			it->second.unique();
 			for (std::list<Function*>::iterator func = it->second.begin(); func != it->second.end(); ++func){
@@ -80,10 +81,11 @@ struct FuncPtrPass : public ModulePass {
 
 	bool checkCallInst(CallInst *callInst) {
 		if(!callInst)return false;
+		int line = callInst->getDebugLoc().getLine();
 		if(Function *func = callInst->getCalledFunction()){	// 最简单的直接函数调用
-			result[callInst].push_back(func);
+			result[line].push_back(func);
 		}else if(Value *value = callInst->getCalledOperand()){
-			result[callInst] = std::list<Function*>(solveValue(value));
+			result[line].splice(result[line].end(), std::list<Function*>(solveValue(value)));
 		}else{
 			errs() << "ERROR\n";
 		}
@@ -152,6 +154,8 @@ struct FuncPtrPass : public ModulePass {
 						errs() << "for argument user, not a call instruction!\n";
 					}
 			} else if (ConstantPointerNull *nptr = dyn_cast<ConstantPointerNull>(value)) {
+			} else if (SelectInst *selectInst = dyn_cast<SelectInst>(value)) {
+				solveRes.push_back(selectInst->getTrueValue());
 			} else {
 				errs() << "ERROR here\n";
 			}
@@ -190,6 +194,8 @@ int main(int argc, char **argv) {
     Passes.add(new EnableFunctionOptPass());
     /// Transform it to SSA
     Passes.add(llvm::createPromoteMemoryToRegisterPass());
+	/// Simplify CFG
+	Passes.add(llvm::createCFGSimplificationPass());
 
     /// Your pass to print Function and Call Instructions
     Passes.add(new FuncPtrPass());
