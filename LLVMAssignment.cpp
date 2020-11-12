@@ -92,7 +92,6 @@ struct FuncPtrPass : public ModulePass {
 		return false;
 	}
 
-	// TODO 修改这个函数，实现功能为传入一条调用指令，一个类型为函数指针的Value的指针。输出为Value的返回值解析
 	std::list<Function*> solveFunction(CallInst *caller, Function *func, BasicBlock* basicBlock) {
 		std::list<Function*> tmp;
 		std::list<Value*> solveRes;
@@ -140,9 +139,6 @@ struct FuncPtrPass : public ModulePass {
 		return tmp;
 	}
 
-	std::list<Function*> solveArgument(CallInst *callInst, unsigned argIdx) {
-	}
-
 	std::list<Function*> solveValue(Value *origin) {
 		std::list<Function*> tmp;
 		std::list<Value*> solveRes;
@@ -153,27 +149,24 @@ struct FuncPtrPass : public ModulePass {
 				tmp.push_back(theFunc);
 			} else if (CallInst *callInst = dyn_cast<CallInst>(value)) {	// return value of some function, maybe phinode
 				tmp.splice(tmp.end(), solveReturnVal(callInst));
-				//if (Function *doubleCall = callInst->getCalledFunction()) {
-					//tmp.splice(tmp.end(), solveFunction(callInst, doubleCall, callInst->getParent()));
-				//} else if (PHINode *phi = dyn_cast<PHINode>(callInst->getCalledOperand())){
-					//for (BasicBlock *block : phi->blocks()){
-						//std::list<Function*> solveTheVal = solveValue(phi->getIncomingValueForBlock(block));
-						//for (Function *func : solveTheVal)
-							//tmp.splice(tmp.end(), solveFunction(callInst, func, block));
-					//}
-				//} else {
-					//std::list<Function*> solveTheVal = solveValue(callInst->getCalledOperand());
-					//for (Function *func : solveTheVal)
-						//tmp.splice(tmp.end(), solveFunction(callInst, func, callInst->getParent()));
-				//}
 			} else if(PHINode *phi = dyn_cast<PHINode>(value)) {	// a phinode
 				for(Value *phivalue : phi->incoming_values())
 					solveRes.push_back(phivalue);
 			} else if(Argument *arg = dyn_cast<Argument>(value)) {	// a argument of current function
 				tmp.splice(tmp.end(), solveArgument(arg));
 			} else if (ConstantPointerNull *nptr = dyn_cast<ConstantPointerNull>(value)) {
-			} else if (SelectInst *selectInst = dyn_cast<SelectInst>(value)) {	// TODO which site should be choosed
-				solveRes.push_back(selectInst->getTrueValue());
+			} else if (SelectInst *selectInst = dyn_cast<SelectInst>(value)) {
+				int mark = 2;
+				if (CmpInst *cmpInst = dyn_cast<CmpInst>(selectInst->getCondition()))
+					mark = solveCmpInst(cmpInst);
+				if (mark == 0)
+					solveRes.push_back(selectInst->getTrueValue());
+				else if (mark == 1)
+					solveRes.push_back(selectInst->getFalseValue());
+				else {
+					solveRes.push_back(selectInst->getTrueValue());
+					solveRes.push_back(selectInst->getFalseValue());
+				}
 			} else {
 				errs() << "ERROR here\n";
 			}
@@ -182,24 +175,97 @@ struct FuncPtrPass : public ModulePass {
 		return tmp;
 	}
 
+	// 0 代表只取TrueValue
+	// 1 代表只取FalseValue
+	// 2 代表两者都取
+	int solveCmpInst(CmpInst *cmpInst) {
+		Value *operand0 = cmpInst->getOperand(0);
+		Value *operand1 = cmpInst->getOperand(1);
+		int64_t item0, item1;
+		if (ConstantInt *cons0 = dyn_cast<ConstantInt>(operand0)) {
+			item0 = cons0->getSExtValue();
+		} else {
+			return 2;
+		}
+		if (ConstantInt *cons1 = dyn_cast<ConstantInt>(operand1)) {
+			item1 = cons1->getSExtValue();
+		} else {
+			return 2;
+		}
+		int res = 1;
+		switch(cmpInst->getPredicate()) {
+			case CmpInst::ICMP_EQ:
+				if (item0 == item1) res = 0;
+				break;
+			case CmpInst::ICMP_NE:
+				if (item0 != item1) res = 0;
+				break;
+			case CmpInst::ICMP_UGT:
+			case CmpInst::ICMP_SGT:
+				if (item0 > item1) res = 0;
+				break;
+			case CmpInst::ICMP_UGE:
+			case CmpInst::ICMP_SGE:
+				if (item0 >= item1) res = 0;
+				break;
+			case CmpInst::ICMP_ULT:
+			case CmpInst::ICMP_SLT:
+				if (item0 < item1) res = 0;
+				break;
+			case CmpInst::ICMP_ULE:
+			case CmpInst::ICMP_SLE:
+				if (item0 <= item1) res = 0;
+				break;
+			default:
+				errs() << "abaaba\n";
+				break;
+		};
+		return res;
+	}
+
 	std::list<Function*> solveArgument(Argument *arg) {
 		std::list<Function*> tmp;
+		std::list<CallInst*> instructions;
 		Function *parentFunction = arg->getParent();
-		for(User *user : parentFunction->users())
+		unsigned argIdx = arg->getArgNo();
+		for(User *user : parentFunction->users()) {
 			if (CallInst *callInst = dyn_cast<CallInst>(user)) {
-				if (arg->getParent() == callInst->getCalledFunction()){
-					int argIdx = arg->getArgNo();
-					Value *valueToSolve = callInst->getArgOperand(std::move(argIdx));
-					tmp.splice(tmp.end(), solveValue(std::move(valueToSolve)));
+				if (parentFunction == callInst->getCalledFunction()){
+					Value *valueToSolve = callInst->getArgOperand(argIdx);
+					tmp.splice(tmp.end(), solveValue(valueToSolve));
 				} else {
-					//for (Value *argument : callInst->operand_values()) {
-						//if (parentFunction == dyn_cast<Function>(argument)) {
-							//tmp.splice(tmp.end(), solveArgument(
-					//}
+					int argNumber = callInst->getNumArgOperands();
+					for (int i = 0; i < argNumber; ++i) {
+						if (parentFunction == dyn_cast<Function>(callInst->getArgOperand(i))) {
+							auto calledFunctions = solveValue(callInst->getCalledOperand());
+							for (Function *func : calledFunctions) {
+								instructions.splice(instructions.end(), solveArgAsFunc(callInst, func, i));
+							}
+						}
+					}
 				}
 			} else {
 				errs() << "for argument user, not a call instruction!\n";
 			}
+		}
+		for (CallInst *inst : instructions) {	// 所有显式调用到arg对应的函数的指令
+			auto valueSolveRes = solveValue(inst->getArgOperand(argIdx));
+			tmp.splice(tmp.end(), valueSolveRes);
+		}
+		return tmp;
+	}
+
+	std::list<CallInst*> solveArgAsFunc(CallInst *callInst, Function *func, int argIdx) {
+		std::list<CallInst*> tmp;
+		for (Function::iterator bb = func->begin(); bb != func->end(); ++bb) {
+			for (BasicBlock::iterator ii = bb->begin(); ii != bb->end(); ++ii) {
+				if (CallInst *it = dyn_cast<CallInst>(ii)){
+					if (Argument* calledArg = dyn_cast<Argument>(it->getCalledOperand()))
+						if (calledArg->getArgNo() == argIdx)
+							tmp.push_back(it);
+				}
+			}
+		}
 		return tmp;
 	}
 };
