@@ -92,6 +92,7 @@ struct FuncPtrPass : public ModulePass {
 		return false;
 	}
 
+	// TODO 修改这个函数，实现功能为传入一条调用指令，一个类型为函数指针的Value的指针。输出为Value的返回值解析
 	std::list<Function*> solveFunction(CallInst *caller, Function *func, BasicBlock* basicBlock) {
 		std::list<Function*> tmp;
 		std::list<Value*> solveRes;
@@ -121,46 +122,84 @@ struct FuncPtrPass : public ModulePass {
 		return tmp;
 	}
 
+	std::list<Function*> solveReturnVal(CallInst *callInst) {
+		std::list<Function*> tmp;
+		if (Function *doubleCall = callInst->getCalledFunction()) {
+			return solveFunction(callInst, doubleCall, callInst->getParent());
+		} else if (PHINode *phi = dyn_cast<PHINode>(callInst->getCalledOperand())){
+			for (BasicBlock *block : phi->blocks()){
+				std::list<Function*> solveTheVal = solveValue(phi->getIncomingValueForBlock(block));
+				for (Function *func : solveTheVal)
+					tmp.splice(tmp.end(), solveFunction(callInst, func, block));
+			}
+		} else {
+			std::list<Function*> solveTheVal = solveValue(callInst->getCalledOperand());
+			for (Function *func : solveTheVal)
+				tmp.splice(tmp.end(), solveFunction(callInst, func, callInst->getParent()));
+		}
+		return tmp;
+	}
+
+	std::list<Function*> solveArgument(CallInst *callInst, unsigned argIdx) {
+	}
+
 	std::list<Function*> solveValue(Value *origin) {
 		std::list<Function*> tmp;
 		std::list<Value*> solveRes;
 		solveRes.push_back(origin);
 		while(!solveRes.empty()) {
 			Value *value = solveRes.front();
-			if (Function *theFunc = dyn_cast<Function>(value)) {
+			if (Function *theFunc = dyn_cast<Function>(value)) {	// the value is a function
 				tmp.push_back(theFunc);
-			} else if (CallInst *callInst = dyn_cast<CallInst>(value)) {
-				if (Function *doubleCall = callInst->getCalledFunction()) {
-					tmp.splice(tmp.end(), solveFunction(callInst, doubleCall, callInst->getParent()));
-				} else if (PHINode *phi = dyn_cast<PHINode>(callInst->getCalledOperand())){
-					for (BasicBlock *block : phi->blocks()){
-						std::list<Function*> solveTheVal = solveValue(phi->getIncomingValueForBlock(block));
-						for (Function *func : solveTheVal)
-							tmp.splice(tmp.end(), solveFunction(callInst, func, block));
-					}
-				} else {
-					std::list<Function*> solveTheVal = solveValue(callInst->getCalledOperand());
-					for (Function *func : solveTheVal)
-						tmp.splice(tmp.end(), solveFunction(callInst, func, callInst->getParent()));
-				}
-			} else if(PHINode *phi = dyn_cast<PHINode>(value)) {
+			} else if (CallInst *callInst = dyn_cast<CallInst>(value)) {	// return value of some function, maybe phinode
+				tmp.splice(tmp.end(), solveReturnVal(callInst));
+				//if (Function *doubleCall = callInst->getCalledFunction()) {
+					//tmp.splice(tmp.end(), solveFunction(callInst, doubleCall, callInst->getParent()));
+				//} else if (PHINode *phi = dyn_cast<PHINode>(callInst->getCalledOperand())){
+					//for (BasicBlock *block : phi->blocks()){
+						//std::list<Function*> solveTheVal = solveValue(phi->getIncomingValueForBlock(block));
+						//for (Function *func : solveTheVal)
+							//tmp.splice(tmp.end(), solveFunction(callInst, func, block));
+					//}
+				//} else {
+					//std::list<Function*> solveTheVal = solveValue(callInst->getCalledOperand());
+					//for (Function *func : solveTheVal)
+						//tmp.splice(tmp.end(), solveFunction(callInst, func, callInst->getParent()));
+				//}
+			} else if(PHINode *phi = dyn_cast<PHINode>(value)) {	// a phinode
 				for(Value *phivalue : phi->incoming_values())
 					solveRes.push_back(phivalue);
-			} else if(Argument *arg = dyn_cast<Argument>(value)) {
-				for(User *user : arg->getParent()->users())
-					if (CallInst *callInst = dyn_cast<CallInst>(user)) {
-						solveRes.push_back(callInst->getArgOperand(arg->getArgNo()));
-					} else {
-						errs() << "for argument user, not a call instruction!\n";
-					}
+			} else if(Argument *arg = dyn_cast<Argument>(value)) {	// a argument of current function
+				tmp.splice(tmp.end(), solveArgument(arg));
 			} else if (ConstantPointerNull *nptr = dyn_cast<ConstantPointerNull>(value)) {
-			} else if (SelectInst *selectInst = dyn_cast<SelectInst>(value)) {
+			} else if (SelectInst *selectInst = dyn_cast<SelectInst>(value)) {	// TODO which site should be choosed
 				solveRes.push_back(selectInst->getTrueValue());
 			} else {
 				errs() << "ERROR here\n";
 			}
 			solveRes.pop_front();
 		}
+		return tmp;
+	}
+
+	std::list<Function*> solveArgument(Argument *arg) {
+		std::list<Function*> tmp;
+		Function *parentFunction = arg->getParent();
+		for(User *user : parentFunction->users())
+			if (CallInst *callInst = dyn_cast<CallInst>(user)) {
+				if (arg->getParent() == callInst->getCalledFunction()){
+					int argIdx = arg->getArgNo();
+					Value *valueToSolve = callInst->getArgOperand(std::move(argIdx));
+					tmp.splice(tmp.end(), solveValue(std::move(valueToSolve)));
+				} else {
+					//for (Value *argument : callInst->operand_values()) {
+						//if (parentFunction == dyn_cast<Function>(argument)) {
+							//tmp.splice(tmp.end(), solveArgument(
+					//}
+				}
+			} else {
+				errs() << "for argument user, not a call instruction!\n";
+			}
 		return tmp;
 	}
 };
