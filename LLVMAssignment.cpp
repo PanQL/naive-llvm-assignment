@@ -72,7 +72,7 @@ struct FuncPtrPass : public ModulePass {
 			it->second.sort();
 			it->second.unique();
 			for (std::list<Function*>::iterator func = it->second.begin(); func != it->second.end(); ++func){
-				errs() << (*func)->getName() << ' ';
+				errs() << (*func)->getName() << ',';
 			}
 			errs() << '\n';
 		}
