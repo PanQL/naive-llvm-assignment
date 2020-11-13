@@ -242,7 +242,6 @@ struct FuncPtrPass : public ModulePass {
 
 	std::list<Function*> solveArgument(Argument *arg) {
 		std::list<Function*> tmp;
-		std::list<CallInst*> instructions;
 		Function *parentFunction = arg->getParent();
 		unsigned argIdx = arg->getArgNo();
 		for(User *user : parentFunction->users()) {
@@ -256,7 +255,8 @@ struct FuncPtrPass : public ModulePass {
 						if (parentFunction == dyn_cast<Function>(callInst->getArgOperand(i))) {
 							auto calledFunctions = solveValue(callInst->getCalledOperand());
 							for (Function *func : calledFunctions) {
-								instructions.splice(instructions.end(), solveArgAsFunc(callInst, func, i)); // TODO i -> argIdx
+								auto valuesToSolve = solveArgAsFunc(callInst, func, argIdx);
+								tmp.splice(tmp.end(), solveFunction(callInst, func, valuesToSolve, callInst->getParent()));
 							}
 						}
 					}
@@ -265,21 +265,17 @@ struct FuncPtrPass : public ModulePass {
 				errs() << "for argument user, not a call instruction!\n";
 			}
 		}
-		for (CallInst *inst : instructions) {	// 所有显式调用到arg对应的函数的指令
-			auto valueSolveRes = solveValue(inst->getArgOperand(argIdx));	// solveValue should not be used here, because there is a callInst for this inst.
-			tmp.splice(tmp.end(), valueSolveRes);
-		}
 		return tmp;
 	}
 
-	std::list<CallInst*> solveArgAsFunc(CallInst *callInst, Function *func, int argIdx) {
-		std::list<CallInst*> tmp;
+	std::list<Value*> solveArgAsFunc(CallInst *callInst, Function *func, int argIdx) {
+		std::list<Value*> tmp;
 		for (Function::iterator bb = func->begin(); bb != func->end(); ++bb) {
 			for (BasicBlock::iterator ii = bb->begin(); ii != bb->end(); ++ii) {
 				if (CallInst *it = dyn_cast<CallInst>(ii)){
 					if (Argument* calledArg = dyn_cast<Argument>(it->getCalledOperand()))
 						if (calledArg->getArgNo() == argIdx)
-							tmp.push_back(it);
+							tmp.push_back(it->getArgOperand(argIdx));
 				}
 			}
 		}
