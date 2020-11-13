@@ -66,7 +66,7 @@ struct FuncPtrPass : public ModulePass {
 			for (Function::iterator bb = ff->begin(); bb != ff->end(); ++bb)
 				for (BasicBlock::iterator ii = bb->begin(); ii != bb->end(); ++ii)
 					res |= checkCallInst(dyn_cast<CallInst>(ii));
-			
+
 		for (std::map<int, std::list<Function*>>::iterator it = result.begin(); it != result.end(); ++it){
 			errs() << it->first << " : ";
 			it->second.sort();
@@ -92,21 +92,23 @@ struct FuncPtrPass : public ModulePass {
 		return false;
 	}
 
-	std::list<Function*> solveFunction(CallInst *caller, Function *func, BasicBlock* basicBlock) {
+	/*
+	 *	caller: 调用语句
+	 *	func: 调用的函数
+	 *	values: 要解析的值
+	 *	basicBlock: 函数定义所在的基本块
+	 */
+	std::list<Function*> solveFunction(CallInst *caller, Function *func, std::list<Value*> values, BasicBlock* basicBlock) {
 		std::list<Function*> tmp;
-		std::list<Value*> solveRes;
-		for (Function::iterator bb = func->begin(); bb != func->end(); ++bb)
-			if (ReturnInst *ret = dyn_cast<ReturnInst>(bb->getTerminator()))
-				solveRes.push_back(ret->getReturnValue());
-		while(!solveRes.empty()){
-			Value *value = solveRes.front();
+		while(!values.empty()){
+			Value *value = values.front();
 			if (Function *theFunc = dyn_cast<Function>(value)) {
 				tmp.push_back(theFunc);
 			} else if (CallInst *callInst = dyn_cast<CallInst>(value)) {
 				errs() << "UNIMPLEMNTED\n";
 			} else if(PHINode *phi = dyn_cast<PHINode>(value)) {
 				for(Value *phivalue : phi->incoming_values())
-					solveRes.push_back(phivalue);
+					values.push_back(phivalue);
 			} else if(Argument *arg = dyn_cast<Argument>(value)) {
 				unsigned argIdx = arg->getArgNo();
 				BasicBlock *curBlock = caller->getParent();
@@ -116,7 +118,7 @@ struct FuncPtrPass : public ModulePass {
 				tmp.splice(tmp.end(), solveValueRes);
 			} else {
 			}
-			solveRes.pop_front();
+			values.pop_front();
 		}
 		return tmp;
 	}
@@ -124,17 +126,32 @@ struct FuncPtrPass : public ModulePass {
 	std::list<Function*> solveReturnVal(CallInst *callInst) {
 		std::list<Function*> tmp;
 		if (Function *doubleCall = callInst->getCalledFunction()) {
-			return solveFunction(callInst, doubleCall, callInst->getParent());
+			std::list<Value*> valuesToSolve = getReturnVal(doubleCall);
+			tmp.splice(tmp.end(), solveFunction(callInst, doubleCall, std::move(valuesToSolve), callInst->getParent()));
 		} else if (PHINode *phi = dyn_cast<PHINode>(callInst->getCalledOperand())){
 			for (BasicBlock *block : phi->blocks()){
 				std::list<Function*> solveTheVal = solveValue(phi->getIncomingValueForBlock(block));
-				for (Function *func : solveTheVal)
-					tmp.splice(tmp.end(), solveFunction(callInst, func, block));
+				for (Function *func : solveTheVal){
+					std::list<Value*> valuesToSolve = getReturnVal(func);
+					tmp.splice(tmp.end(), solveFunction(callInst, func, std::move(valuesToSolve), block));
+				}
 			}
 		} else {
 			std::list<Function*> solveTheVal = solveValue(callInst->getCalledOperand());
-			for (Function *func : solveTheVal)
-				tmp.splice(tmp.end(), solveFunction(callInst, func, callInst->getParent()));
+			for (Function *func : solveTheVal){
+				std::list<Value*> valuesToSolve = getReturnVal(func);
+				tmp.splice(tmp.end(), solveFunction(callInst, func, std::move(valuesToSolve), callInst->getParent()));
+			}
+		}
+		return tmp;
+	}
+
+	std::list<Value*> getReturnVal(Function *func) {
+		std::list<Value*> tmp;
+		for (Function::iterator bb = func->begin(); bb != func->end(); ++bb){
+			if (ReturnInst *ret = dyn_cast<ReturnInst>(bb->getTerminator())){
+				tmp.push_back(ret->getReturnValue());
+			}
 		}
 		return tmp;
 	}
@@ -239,7 +256,7 @@ struct FuncPtrPass : public ModulePass {
 						if (parentFunction == dyn_cast<Function>(callInst->getArgOperand(i))) {
 							auto calledFunctions = solveValue(callInst->getCalledOperand());
 							for (Function *func : calledFunctions) {
-								instructions.splice(instructions.end(), solveArgAsFunc(callInst, func, i));
+								instructions.splice(instructions.end(), solveArgAsFunc(callInst, func, i)); // TODO i -> argIdx
 							}
 						}
 					}
@@ -249,7 +266,7 @@ struct FuncPtrPass : public ModulePass {
 			}
 		}
 		for (CallInst *inst : instructions) {	// 所有显式调用到arg对应的函数的指令
-			auto valueSolveRes = solveValue(inst->getArgOperand(argIdx));
+			auto valueSolveRes = solveValue(inst->getArgOperand(argIdx));	// solveValue should not be used here, because there is a callInst for this inst.
 			tmp.splice(tmp.end(), valueSolveRes);
 		}
 		return tmp;
